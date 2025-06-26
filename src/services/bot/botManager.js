@@ -124,17 +124,33 @@ class BotManager {
       const path = require('path');
       const os = require('os');
       
-      // Use same config directory logic as ConfigService
-      const userDataDir = process.env.APPDATA || 
-                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
-                          path.join(os.homedir(), '.local', 'share'));
-      const configDir = path.join(userDataDir, 'DiscordBotManager', 'config');
-      const bingoConfigPath = path.join(configDir, 'bingo-config.json');
+      // Try multiple config paths for robustness
+      const possibleConfigPaths = [
+        // Standard config path
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'DiscordBotManager', 'config', 'bingo-config.json') : null,
+        // macOS
+        process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support', 'DiscordBotManager', 'config', 'bingo-config.json') : null,
+        // Linux
+        process.platform === 'linux' ? path.join(os.homedir(), '.local', 'share', 'DiscordBotManager', 'config', 'bingo-config.json') : null,
+        // Fallback
+        path.join(os.tmpdir(), 'DiscordBotManager', 'config', 'bingo-config.json')
+      ].filter(Boolean);
       
-      if (fs.existsSync(bingoConfigPath)) {
-        const data = fs.readFileSync(bingoConfigPath, 'utf8');
-        return JSON.parse(data);
+      for (const configPath of possibleConfigPaths) {
+        if (fs.existsSync(configPath)) {
+          try {
+            const data = fs.readFileSync(configPath, 'utf8');
+            const config = JSON.parse(data);
+            this.log('info', `Bingo-Config geladen von: ${configPath}`);
+            return config;
+          } catch (error) {
+            this.log('warn', `Konnte Bingo-Config nicht laden von: ${configPath}`, error.message);
+            continue;
+          }
+        }
       }
+      
+      this.log('info', 'Keine Bingo-Config gefunden, verwende Defaults');
     } catch (error) {
       this.log('error', 'Fehler beim Laden der Bingo-Konfiguration', error.message);
     }
@@ -339,9 +355,11 @@ class BotManager {
       this.log('info', `👍 Reaktion hinzugefügt`, {
         emoji: reaction.emoji.name || reaction.emoji.id,
         emojiId: reaction.emoji.id,
+        emojiUnicode: reaction.emoji.toString(),
         user: user.username,
         isBot: user.bot,
-        isPartial: reaction.partial
+        isPartial: reaction.partial,
+        messageContent: reaction.message.content.substring(0, 100)
       });
 
       if (user.bot) {
@@ -363,9 +381,25 @@ class BotManager {
 
       // Check for bingo event reactions first
       const bingoConfig = this.getBingoConfig();
-      if (bingoConfig.enabled && this.matchesReaction(reaction, { emoji: bingoConfig.reactionEmoji })) {
-        await this.handleBingoEventReaction(reaction, user, bingoConfig);
-        return;
+      this.log('info', '🎯 Prüfe Bingo-Konfiguration', {
+        bingoEnabled: bingoConfig.enabled,
+        reactionEmoji: bingoConfig.reactionEmoji,
+        messageStartsWith: reaction.message.content.startsWith('🎯')
+      });
+      
+      if (bingoConfig.enabled) {
+        // Check if this is a bingo event message
+        const isBingoMessage = reaction.message.content.includes('🎯 **');
+        this.log('info', '🔍 Bingo Message Check', {
+          isBingoMessage,
+          messageContent: reaction.message.content.substring(0, 50)
+        });
+        
+        if (isBingoMessage && this.matchesReaction(reaction, { emoji: bingoConfig.reactionEmoji })) {
+          this.log('success', '🎯 Bingo Event Reaktion erkannt!');
+          await this.handleBingoEventReaction(reaction, user, bingoConfig);
+          return;
+        }
       }
 
       const currentConfig = this.getCurrentConfig();
@@ -667,7 +701,7 @@ class BotManager {
         return;
       }
       
-      await interaction.deferReply();
+      await interaction.deferReply({ ephemeral: true });
       
       // Generate bingo card
       const bingoCard = this.generateBingoCard(activeDeck, bingoConfig.cardSize);
@@ -686,37 +720,70 @@ class BotManager {
         startedAt: new Date().toISOString()
       });
       
-      // Send individual event messages
-      let eventMessages = [];
-      for (let i = 0; i < bingoCard.length; i++) {
-        const event = bingoCard[i];
-        const row = Math.floor(i / bingoConfig.cardSize.width) + 1;
-        const col = (i % bingoConfig.cardSize.width) + 1;
+      try {
+        // Send DM with bingo card info
+        const dmChannel = await interaction.user.createDM();
         
-        const eventMsg = await interaction.followUp({
-          content: `🎯 **${row}.${col}** ${event.text}`,
-          fetchReply: true
-        });
+        // Send individual event messages privately
+        let eventMessages = [];
         
-        // Add reaction emoji
-        await eventMsg.react(bingoConfig.reactionEmoji);
-        eventMessages.push({ messageId: eventMsg.id, eventId: event.id });
+        await dmChannel.send(`🎯 **Deine Bingo-Karte für "${activeDeck.name}"**\n📋 Spiel-ID: ${gameId}\n\n**Reagiere mit ${bingoConfig.reactionEmoji} auf die Events wenn sie passieren!**`);
+        
+        this.log('info', `Header-Nachricht gesendet, beginne mit ${bingoCard.length} Event-Nachrichten`);
+        
+        for (let i = 0; i < bingoCard.length; i++) {
+          const event = bingoCard[i];
+          const row = Math.floor(i / bingoConfig.cardSize.width) + 1;
+          const col = (i % bingoConfig.cardSize.width) + 1;
+          
+          const eventMsg = await dmChannel.send(`🎯 **${row}.${col}** ${event.text}`);
+          
+          this.log('info', `Event-Nachricht ${i+1}/${bingoCard.length} gesendet: ${row}.${col} - ${event.text.substring(0, 30)}...`);
+          
+          // Add reaction emoji
+          await eventMsg.react(bingoConfig.reactionEmoji);
+          eventMessages.push({ messageId: eventMsg.id, eventId: event.id });
+          
+          // Small delay to avoid rate limits
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Send text-based bingo card
+        const textCard = this.generateTextBingoCard(bingoCard, bingoConfig, interaction.user.username);
+        await dmChannel.send({ content: textCard });
+        
+        // Save message references
+        await this.updateBingoGameMessages(gameId, eventMessages);
+        
+        await interaction.editReply('✅ Deine Bingo-Karte wurde dir privat gesendet! Schau in deine DMs.');
+        
+        this.log('success', `✅ Bingo-Karte erstellt und privat gesendet für ${interaction.user.username}`);
+        
+      } catch (dmError) {
+        this.log('warn', 'Konnte keine DM senden, sende öffentlich', dmError.message);
+        
+        // Fallback: Send publicly if DM fails
+        let eventMessages = [];
+        for (let i = 0; i < bingoCard.length; i++) {
+          const event = bingoCard[i];
+          const row = Math.floor(i / bingoConfig.cardSize.width) + 1;
+          const col = (i % bingoConfig.cardSize.width) + 1;
+          
+          const eventMsg = await interaction.followUp({
+            content: `🎯 **${row}.${col}** ${event.text}`,
+            fetchReply: true
+          });
+          
+          await eventMsg.react(bingoConfig.reactionEmoji);
+          eventMessages.push({ messageId: eventMsg.id, eventId: event.id });
+        }
+        
+        const textCard = this.generateTextBingoCard(bingoCard, bingoConfig, interaction.user.username);
+        await interaction.followUp({ content: textCard });
+        
+        await this.updateBingoGameMessages(gameId, eventMessages);
+        await interaction.editReply('✅ Bingo-Karte erstellt! (DM fehlgeschlagen, öffentlich gesendet)');
       }
-      
-      // Generate and send PNG
-      const pngBuffer = await this.generateBingoPNG(bingoCard, bingoConfig, interaction.user.username);
-      await interaction.followUp({
-        content: `🎯 **Deine Bingo-Karte, ${interaction.user.username}!**\nReagiere mit ${bingoConfig.reactionEmoji} auf die Events wenn sie passieren!`,
-        files: [{
-          attachment: pngBuffer,
-          name: `bingo-${interaction.user.username}-${gameId}.png`
-        }]
-      });
-      
-      // Save message references
-      await this.updateBingoGameMessages(gameId, eventMessages);
-      
-      this.log('success', `✅ Bingo-Karte erstellt für ${interaction.user.username}`);
       
     } catch (error) {
       this.log('error', 'Fehler beim Erstellen der Bingo-Karte', error.message);
@@ -728,20 +795,53 @@ class BotManager {
     try {
       this.log('info', `🏆 Bingo Win Claim von ${interaction.user.username}`);
       
-      // Save bingo win claim
+      // Find user's active game
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      
+      const userDataDir = process.env.APPDATA || 
+                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
+                          path.join(os.homedir(), '.local', 'share'));
+      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
+      const gamesFile = path.join(dataDir, 'active-games.json');
+      
+      let userGame = null;
+      if (fs.existsSync(gamesFile)) {
+        const games = JSON.parse(fs.readFileSync(gamesFile, 'utf8'));
+        userGame = games.find(game => game.userId === interaction.user.id);
+      }
+      
+      if (!userGame) {
+        await interaction.reply({
+          content: '❌ Du hast derzeit kein aktives Bingo-Spiel! Verwende zuerst `/bingo` um eine Karte anzufordern.',
+          ephemeral: true
+        });
+        return;
+      }
+      
+      // Save bingo win claim with game ID
       await this.saveBingoWin({
         id: this.generateGameId(),
         userId: interaction.user.id,
         username: interaction.user.username,
+        gameId: userGame.id,
+        deckName: userGame.deckName,
+        confirmedEventsCount: userGame.confirmedEvents.length,
+        totalEventsCount: userGame.cardData.length,
         timestamp: new Date().toISOString()
       });
       
       await interaction.reply({
-        content: `🏆 **BINGO!** ${interaction.user.mention} behauptet ein Bingo zu haben!\n🔍 Der Streamer überprüft deine Karte...`,
+        content: `🏆 **BINGO!** ${interaction.user.mention} behauptet ein Bingo zu haben!\n🔍 Der Streamer überprüft deine Karte...\n\n📊 **Dein Status:** ${userGame.confirmedEvents.length}/${userGame.cardData.length} Events bestätigt`,
         allowedMentions: { parse: [] }
       });
       
-      this.log('success', `✅ Bingo Win gespeichert für ${interaction.user.username}`);
+      this.log('success', `✅ Bingo Win gespeichert für ${interaction.user.username}`, {
+        gameId: userGame.id,
+        confirmedEvents: userGame.confirmedEvents.length,
+        totalEvents: userGame.cardData.length
+      });
       
     } catch (error) {
       this.log('error', 'Fehler beim Verarbeiten des Bingo Wins', error.message);
@@ -758,113 +858,85 @@ class BotManager {
     return shuffled.slice(0, totalFields);
   }
   
-  async generateBingoPNG(cardData, bingoConfig, username) {
-    try {
-      const { createCanvas } = require('canvas');
-      const canvas = createCanvas(bingoConfig.cardDimensions.width, bingoConfig.cardDimensions.height);
-      const ctx = canvas.getContext('2d');
+  generateTextBingoCard(cardData, bingoConfig, username) {
+    const gridSize = bingoConfig.cardSize.width;
+    let card = `🎯 **STREAMING BINGO - ${username.toUpperCase()}**\n\n`;
+    
+    // Create header row with column numbers
+    card += '┌';
+    for (let col = 0; col < gridSize; col++) {
+      card += '─────';
+      if (col < gridSize - 1) card += '┬';
+    }
+    card += '┐\n';
+    
+    // Create rows
+    for (let row = 0; row < gridSize; row++) {
+      let rowText = '│';
       
-      // Background
-      ctx.fillStyle = '#2d2d2d';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      
-      // Title
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 32px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText(`STREAMING BINGO - ${username}`, canvas.width / 2, 40);
-      
-      // Calculate grid
-      const gridSize = bingoConfig.cardSize.width;
-      const cellWidth = (canvas.width - 60) / gridSize;
-      const cellHeight = (canvas.height - 100) / gridSize;
-      const startX = 30;
-      const startY = 70;
-      
-      // Draw cells
-      ctx.font = '14px Arial';
-      ctx.textAlign = 'center';
-      
-      for (let i = 0; i < cardData.length; i++) {
-        const row = Math.floor(i / gridSize);
-        const col = i % gridSize;
-        const x = startX + col * cellWidth;
-        const y = startY + row * cellHeight;
+      for (let col = 0; col < gridSize; col++) {
+        const index = row * gridSize + col;
+        const cellNumber = `${row + 1}.${col + 1}`;
         
-        // Cell background
-        ctx.fillStyle = '#3a3a3a';
-        ctx.fillRect(x, y, cellWidth - 2, cellHeight - 2);
-        
-        // Cell border
-        ctx.strokeStyle = '#5865f2';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, cellWidth - 2, cellHeight - 2);
-        
-        // Text
-        ctx.fillStyle = '#ffffff';
-        const text = cardData[i].text;
-        const maxWidth = cellWidth - 10;
-        
-        // Word wrap
-        const words = text.split(' ');
-        const lines = [];
-        let currentLine = '';
-        
-        for (const word of words) {
-          const testLine = currentLine ? `${currentLine} ${word}` : word;
-          const metrics = ctx.measureText(testLine);
-          if (metrics.width < maxWidth) {
-            currentLine = testLine;
-          } else {
-            if (currentLine) lines.push(currentLine);
-            currentLine = word;
-          }
-        }
-        if (currentLine) lines.push(currentLine);
-        
-        // Draw text lines
-        const lineHeight = 16;
-        const textStartY = y + cellHeight / 2 - (lines.length * lineHeight) / 2 + lineHeight;
-        
-        lines.forEach((line, lineIndex) => {
-          ctx.fillText(line, x + cellWidth / 2, textStartY + lineIndex * lineHeight);
-        });
+        // Truncate long text and center align
+        let cellText = cellNumber.padEnd(4);
+        rowText += ` ${cellText}`;
+        if (col < gridSize - 1) rowText += '│';
       }
       
-      return canvas.toBuffer('image/png');
+      rowText += '│\n';
+      card += rowText;
       
-    } catch (error) {
-      this.log('error', 'Fehler beim Generieren des PNG', error.message);
-      throw error;
+      // Add separator row (except for last row)
+      if (row < gridSize - 1) {
+        card += '├';
+        for (let col = 0; col < gridSize; col++) {
+          card += '─────';
+          if (col < gridSize - 1) card += '┼';
+        }
+        card += '┤\n';
+      }
     }
+    
+    // Bottom border
+    card += '└';
+    for (let col = 0; col < gridSize; col++) {
+      card += '─────';
+      if (col < gridSize - 1) card += '┴';
+    }
+    card += '┘\n';
+    
+    card += `\n🏆 **Ziel:** Vervollständige eine Reihe horizontal, vertikal oder diagonal!`;
+    card += `\n🔄 **Anleitung:** Reagiere mit ${bingoConfig.reactionEmoji} auf Event-Nachrichten!`;
+    
+    return '```' + card + '```';
   }
   
   async saveBingoGame(gameData) {
-    // This would typically save to a database
-    // For now, we'll use a simple file-based approach
     try {
       const fs = require('fs');
       const path = require('path');
-      const os = require('os');
       
-      const userDataDir = process.env.APPDATA || 
-                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
-                          path.join(os.homedir(), '.local', 'share'));
-      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
-      
-      if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-      }
-      
+      const dataDir = this.getDataDirectory();
       const gamesFile = path.join(dataDir, 'active-games.json');
+      
+      this.log('info', `Speichere Bingo Game in: ${gamesFile}`);
+      
       let games = [];
       
       if (fs.existsSync(gamesFile)) {
-        games = JSON.parse(fs.readFileSync(gamesFile, 'utf8'));
+        try {
+          games = JSON.parse(fs.readFileSync(gamesFile, 'utf8'));
+        } catch (parseError) {
+          this.log('warn', 'Konnte bestehende Games nicht laden', parseError.message);
+          games = [];
+        }
       }
       
       games.push(gameData);
       fs.writeFileSync(gamesFile, JSON.stringify(games, null, 2));
+      
+      this.log('success', `Bingo Game erfolgreich gespeichert. Total: ${games.length} aktive Spiele`);
       
     } catch (error) {
       this.log('error', 'Fehler beim Speichern des Bingo-Spiels', error.message);
@@ -875,26 +947,27 @@ class BotManager {
     try {
       const fs = require('fs');
       const path = require('path');
-      const os = require('os');
       
-      const userDataDir = process.env.APPDATA || 
-                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
-                          path.join(os.homedir(), '.local', 'share'));
-      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
-      
-      if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-      }
-      
+      const dataDir = this.getDataDirectory();
       const winsFile = path.join(dataDir, 'bingo-wins.json');
+      
+      this.log('info', `Speichere Bingo Win in: ${winsFile}`);
+      
       let wins = [];
       
       if (fs.existsSync(winsFile)) {
-        wins = JSON.parse(fs.readFileSync(winsFile, 'utf8'));
+        try {
+          wins = JSON.parse(fs.readFileSync(winsFile, 'utf8'));
+        } catch (parseError) {
+          this.log('warn', 'Konnte bestehende Wins nicht laden', parseError.message);
+          wins = [];
+        }
       }
       
       wins.push(winData);
       fs.writeFileSync(winsFile, JSON.stringify(wins, null, 2));
+      
+      this.log('success', `Bingo Win erfolgreich gespeichert. Total: ${wins.length} Wins`);
       
     } catch (error) {
       this.log('error', 'Fehler beim Speichern des Bingo-Wins', error.message);
@@ -902,25 +975,29 @@ class BotManager {
   }
   
   async updateBingoGameMessages(gameId, eventMessages) {
-    // Store message references for later use
     try {
       const fs = require('fs');
       const path = require('path');
-      const os = require('os');
       
-      const userDataDir = process.env.APPDATA || 
-                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
-                          path.join(os.homedir(), '.local', 'share'));
-      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
+      const dataDir = this.getDataDirectory();
       const messagesFile = path.join(dataDir, 'game-messages.json');
+      
+      this.log('info', `Speichere Game Messages in: ${messagesFile}`);
       
       let gameMessages = {};
       if (fs.existsSync(messagesFile)) {
-        gameMessages = JSON.parse(fs.readFileSync(messagesFile, 'utf8'));
+        try {
+          gameMessages = JSON.parse(fs.readFileSync(messagesFile, 'utf8'));
+        } catch (parseError) {
+          this.log('warn', 'Konnte bestehende Game Messages nicht laden', parseError.message);
+          gameMessages = {};
+        }
       }
       
       gameMessages[gameId] = eventMessages;
       fs.writeFileSync(messagesFile, JSON.stringify(gameMessages, null, 2));
+      
+      this.log('success', `Game Messages erfolgreich gespeichert für Game: ${gameId}`);
       
     } catch (error) {
       this.log('error', 'Fehler beim Speichern der Game Messages', error.message);
@@ -931,6 +1008,63 @@ class BotManager {
     return Date.now().toString(36) + Math.random().toString(36).substr(2);
   }
   
+  getDataDirectory() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      
+      let dataDir;
+      
+      // Try multiple possible paths for robustness
+      const possiblePaths = [
+        // Electron app.getPath('userData') equivalent
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'DiscordBotManager', 'bingo-data') : null,
+        // macOS
+        process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support', 'DiscordBotManager', 'bingo-data') : null,
+        // Linux
+        process.platform === 'linux' ? path.join(os.homedir(), '.local', 'share', 'DiscordBotManager', 'bingo-data') : null,
+        // Fallback to temp directory
+        path.join(os.tmpdir(), 'DiscordBotManager', 'bingo-data'),
+        // Last resort fallback
+        path.join(__dirname, '..', '..', '..', 'bingo-data')
+      ].filter(Boolean);
+      
+      // Try each path until we find one that works
+      for (const testPath of possiblePaths) {
+        try {
+          if (!fs.existsSync(testPath)) {
+            fs.mkdirSync(testPath, { recursive: true });
+          }
+          // Test write access
+          const testFile = path.join(testPath, 'test-write.txt');
+          fs.writeFileSync(testFile, 'test');
+          fs.unlinkSync(testFile);
+          
+          dataDir = testPath;
+          break;
+        } catch (error) {
+          this.log('warn', `Pfad nicht verwendbar: ${testPath}`, error.message);
+          continue;
+        }
+      }
+      
+      if (!dataDir) {
+        throw new Error('Konnte kein verwendbares Datenverzeichnis finden');
+      }
+      
+      this.log('info', `Datenverzeichnis gefunden: ${dataDir}`);
+      return dataDir;
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Bestimmen des Datenverzeichnisses', error.message);
+      // Ultimate fallback
+      const fallback = require('path').join(require('os').tmpdir(), 'bingo-data');
+      this.log('warn', `Verwende Fallback-Pfad: ${fallback}`);
+      return fallback;
+    }
+  }
+  
   async handleBingoEventReaction(reaction, user, bingoConfig) {
     try {
       this.log('info', `🎯 Bingo Event Reaktion von ${user.username}`);
@@ -938,21 +1072,31 @@ class BotManager {
       // Check if this is a bingo event message
       const messageContent = reaction.message.content;
       if (!messageContent.includes('🎯 **')) {
-        return; // Not a bingo event message
-      }
-      
-      // Extract event text from message
-      const eventTextMatch = messageContent.match(/🎯 \*\*\d+\.\d+\*\* (.+)/);
-      if (!eventTextMatch) {
+        this.log('warn', 'Nachricht ist keine Bingo-Event-Nachricht', { content: messageContent.substring(0, 50) });
         return;
       }
       
-      const eventText = eventTextMatch[1];
+      // Extract event text from message
+      const eventTextMatch = messageContent.match(/🎯 \*\*(\d+\.\d+)\*\* (.+)/);
+      if (!eventTextMatch) {
+        this.log('warn', 'Konnte Event-Text nicht extrahieren', { content: messageContent });
+        return;
+      }
+      
+      const eventPosition = eventTextMatch[1];
+      const eventText = eventTextMatch[2];
+      
+      this.log('info', `Event extrahiert: ${eventPosition} - ${eventText}`);
+      
+      // Get data directory with better path handling for production
+      const dataDir = this.getDataDirectory();
+      this.log('info', `Verwende Datenverzeichnis: ${dataDir}`);
       
       // Save event notification
       await this.saveBingoEventNotification({
         id: this.generateGameId(),
         eventText: eventText,
+        eventPosition: eventPosition,
         messageId: reaction.message.id,
         channelId: reaction.message.channel.id,
         users: [{
@@ -964,6 +1108,14 @@ class BotManager {
       
       this.log('success', `✅ Bingo Event Notification gespeichert: "${eventText}" von ${user.username}`);
       
+      // Send confirmation reaction
+      try {
+        await reaction.message.react('📝'); // Note emoji
+        this.log('info', 'Bestätigungs-Reaktion hinzugefügt');
+      } catch (reactionError) {
+        this.log('warn', 'Konnte Bestätigungs-Reaktion nicht hinzufügen', reactionError.message);
+      }
+      
     } catch (error) {
       this.log('error', 'Fehler beim Verarbeiten der Bingo Event Reaktion', error.message);
     }
@@ -973,42 +1125,60 @@ class BotManager {
     try {
       const fs = require('fs');
       const path = require('path');
-      const os = require('os');
       
-      const userDataDir = process.env.APPDATA || 
-                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
-                          path.join(os.homedir(), '.local', 'share'));
-      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
-      
-      if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-      }
-      
+      const dataDir = this.getDataDirectory();
       const notificationsFile = path.join(dataDir, 'event-notifications.json');
+      
+      this.log('info', `Speichere Event Notification in: ${notificationsFile}`);
+      
       let notifications = [];
       
+      // Load existing notifications
       if (fs.existsSync(notificationsFile)) {
-        notifications = JSON.parse(fs.readFileSync(notificationsFile, 'utf8'));
+        try {
+          const data = fs.readFileSync(notificationsFile, 'utf8');
+          notifications = JSON.parse(data);
+          this.log('info', `${notifications.length} bestehende Notifications geladen`);
+        } catch (parseError) {
+          this.log('warn', 'Konnte bestehende Notifications nicht laden, starte mit leerem Array', parseError.message);
+          notifications = [];
+        }
       }
       
       // Check if notification for this event already exists
-      const existingNotification = notifications.find(n => n.eventText === notification.eventText);
+      const existingNotification = notifications.find(n => 
+        n.eventText === notification.eventText && 
+        n.eventPosition === notification.eventPosition
+      );
       
       if (existingNotification) {
         // Add user to existing notification if not already there
         const userExists = existingNotification.users.find(u => u.id === notification.users[0].id);
         if (!userExists) {
           existingNotification.users.push(notification.users[0]);
-          fs.writeFileSync(notificationsFile, JSON.stringify(notifications, null, 2));
+          this.log('info', `User zu bestehender Notification hinzugefügt: ${notification.users[0].username}`);
+        } else {
+          this.log('info', `User bereits in Notification vorhanden: ${notification.users[0].username}`);
+          return; // No need to save if user already exists
         }
       } else {
         // Create new notification
         notifications.push(notification);
+        this.log('info', `Neue Notification erstellt für Event: ${notification.eventText}`);
+      }
+      
+      // Save notifications with error handling
+      try {
         fs.writeFileSync(notificationsFile, JSON.stringify(notifications, null, 2));
+        this.log('success', `Event Notifications erfolgreich gespeichert (${notifications.length} total)`);
+      } catch (writeError) {
+        this.log('error', 'Fehler beim Schreiben der Notifications-Datei', writeError.message);
+        throw writeError;
       }
       
     } catch (error) {
       this.log('error', 'Fehler beim Speichern der Event Notification', error.message);
+      // Don't throw here to prevent breaking the reaction handling
     }
   }
 }

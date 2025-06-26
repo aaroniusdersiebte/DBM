@@ -271,13 +271,27 @@ const BingoEventManager = ({ bingoConfig, updateBingoConfig }) => {
               <p className="card-subtitle">Übersicht aller laufenden Bingo-Spiele</p>
             </div>
             {activeGames.length > 0 && (
-              <button 
-                className="btn btn-danger"
-                onClick={clearAllGames}
-                style={{ padding: '8px 16px', fontSize: '12px' }}
-              >
-                Alle Spiele beenden
-              </button>
+              <>
+                <button 
+                  className="btn btn-danger"
+                  onClick={clearAllGames}
+                  style={{ padding: '8px 16px', fontSize: '12px', marginRight: '10px' }}
+                >
+                  Alle Spiele beenden
+                </button>
+                <button 
+                  className="btn btn-secondary"
+                  onClick={() => {
+                    if (ipcRenderer) {
+                      ipcRenderer.invoke('bingo:testReactionHandling');
+                      alert('Test-Log-Nachrichten gesendet. Prüfe die Logs.');
+                    }
+                  }}
+                  style={{ padding: '8px 16px', fontSize: '12px' }}
+                >
+                  🔍 Test Reaction Logging
+                </button>
+              </>
             )}
           </div>
         </div>

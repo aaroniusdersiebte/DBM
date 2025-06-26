@@ -28,7 +28,6 @@ const BingoSettings = ({ bingoConfig, updateBingoConfig, saving }) => {
     const defaultConfig = {
       slashCommand: '/bingo',
       cardSize: { width: 5, height: 5 },
-      cardDimensions: { width: 800, height: 600 },
       reactionEmoji: '✅',
       bingoCommand: '/bingowin',
       bingoValidationChannelId: '',
@@ -97,7 +96,7 @@ const BingoSettings = ({ bingoConfig, updateBingoConfig, saving }) => {
         <div className="card">
           <div className="card-header">
             <h3 className="card-title">🎯 Bingo-Karten Konfiguration</h3>
-            <p className="card-subtitle">Größe und Erscheinungsbild der Bingo-Karten</p>
+            <p className="card-subtitle">Größe und Format der Bingo-Karten</p>
           </div>
 
           <div className="form-group">
@@ -128,44 +127,21 @@ const BingoSettings = ({ bingoConfig, updateBingoConfig, saving }) => {
             </small>
           </div>
 
-          <div className="form-group">
-            <label className="form-label">PNG Größe (Pixel)</label>
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-              <input
-                type="number"
-                className="form-input"
-                value={localConfig.cardDimensions.width}
-                onChange={(e) => handleCardDimensionsChange('width', parseInt(e.target.value) || 800)}
-                min="400"
-                max="2000"
-                step="50"
-                style={{ width: '100px' }}
-              />
-              <span>×</span>
-              <input
-                type="number"
-                className="form-input"
-                value={localConfig.cardDimensions.height}
-                onChange={(e) => handleCardDimensionsChange('height', parseInt(e.target.value) || 600)}
-                min="300"
-                max="2000"
-                step="50"
-                style={{ width: '100px' }}
-              />
-            </div>
-            <small style={{ color: 'var(--text-muted)' }}>
-              Auflösung der generierten PNG-Datei (Breite × Höhe)
-            </small>
-          </div>
-
           <div style={{ 
-            padding: '10px', 
+            padding: '15px', 
             background: 'var(--bg-tertiary)', 
             borderRadius: '6px',
             marginTop: '10px'
           }}>
-            <strong>Vorschau:</strong> 
-            {localConfig.cardSize.width}×{localConfig.cardSize.height} Karte = {localConfig.cardSize.width * localConfig.cardSize.height} Events benötigt
+            <div style={{ marginBottom: '10px' }}>
+              <strong>📊 Karten-Info:</strong>
+            </div>
+            <div style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>
+              • {localConfig.cardSize.width}×{localConfig.cardSize.height} Karte = {localConfig.cardSize.width * localConfig.cardSize.height} Events benötigt<br/>
+              • Text-basierte Karten (plattformunabhängig)<br/>
+              • Automatische DM-Zustellung an Spieler<br/>
+              • Nummerierte Event-Nachrichten für einfache Verwaltung
+            </div>
           </div>
         </div>
 
@@ -283,8 +259,8 @@ const BingoSettings = ({ bingoConfig, updateBingoConfig, saving }) => {
             <h4 style={{ color: 'var(--accent-color)', marginBottom: '10px' }}>1. Bingo anfordern</h4>
             <p style={{ fontSize: '14px', lineHeight: '1.5', color: 'var(--text-secondary)' }}>
               Benutzer geben <code>{localConfig.slashCommand}</code> ein und erhalten:
-              <br />• Einzelne Event-Nachrichten (nummeriert)
-              <br />• Eine PNG Bingo-Karte
+              <br />• Einzelne Event-Nachrichten (nummeriert) in DMs
+              <br />• Eine text-basierte Bingo-Karte zur Übersicht
             </p>
           </div>
 
