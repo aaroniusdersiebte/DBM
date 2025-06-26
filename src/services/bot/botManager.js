@@ -117,9 +117,43 @@ class BotManager {
     }
   }
 
+  // Get bingo config
+  getBingoConfig() {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      
+      // Use same config directory logic as ConfigService
+      const userDataDir = process.env.APPDATA || 
+                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
+                          path.join(os.homedir(), '.local', 'share'));
+      const configDir = path.join(userDataDir, 'DiscordBotManager', 'config');
+      const bingoConfigPath = path.join(configDir, 'bingo-config.json');
+      
+      if (fs.existsSync(bingoConfigPath)) {
+        const data = fs.readFileSync(bingoConfigPath, 'utf8');
+        return JSON.parse(data);
+      }
+    } catch (error) {
+      this.log('error', 'Fehler beim Laden der Bingo-Konfiguration', error.message);
+    }
+    
+    return {
+      enabled: false,
+      slashCommand: '/bingo',
+      bingoCommand: '/bingowin',
+      cardSize: { width: 5, height: 5 },
+      reactionEmoji: '✅',
+      decks: [],
+      activeDeckId: null
+    };
+  }
+
   async registerCommands(config) {
     try {
       const currentConfig = this.getCurrentConfig();
+      const bingoConfig = this.getBingoConfig();
       
       // Get slash command triggers
       const slashCommandTriggers = currentConfig.triggers?.filter(trigger => 
@@ -129,13 +163,6 @@ class BotManager {
       // Also include old-style commands for backward compatibility
       const oldCommands = currentConfig.commands || [];
 
-      if (slashCommandTriggers.length === 0 && oldCommands.length === 0) {
-        this.log('info', 'Keine Commands zu registrieren');
-        return;
-      }
-
-      const rest = new REST({ version: '10' }).setToken(config.token);
-      
       const commands = [];
 
       // Add slash command triggers
@@ -157,6 +184,31 @@ class BotManager {
         });
       });
 
+      // Add bingo commands if enabled
+      if (bingoConfig.enabled) {
+        // Add bingo start command
+        const bingoCommandName = bingoConfig.slashCommand.replace('/', '');
+        commands.push({
+          name: bingoCommandName,
+          description: 'Neue Streaming Bingo Karte anfordern'
+        });
+        this.log('info', `Bingo Command vorbereitet: /${bingoCommandName}`);
+
+        // Add bingo win command
+        const bingoWinCommandName = bingoConfig.bingoCommand.replace('/', '');
+        commands.push({
+          name: bingoWinCommandName,
+          description: 'Bingo melden - Ich habe gewonnen!'
+        });
+        this.log('info', `Bingo Win Command vorbereitet: /${bingoWinCommandName}`);
+      }
+
+      if (commands.length === 0) {
+        this.log('info', 'Keine Commands zu registrieren');
+        return;
+      }
+
+      const rest = new REST({ version: '10' }).setToken(config.token);
       this.log('info', `Registriere ${commands.length} Commands...`);
 
       if (config.guildId) {
@@ -193,6 +245,23 @@ class BotManager {
       });
 
       const currentConfig = this.getCurrentConfig();
+      const bingoConfig = this.getBingoConfig();
+      
+      // Check for bingo commands first
+      if (bingoConfig.enabled) {
+        const bingoCommandName = bingoConfig.slashCommand.replace('/', '');
+        const bingoWinCommandName = bingoConfig.bingoCommand.replace('/', '');
+        
+        if (interaction.commandName === bingoCommandName) {
+          await this.handleBingoRequest(interaction, bingoConfig);
+          return;
+        }
+        
+        if (interaction.commandName === bingoWinCommandName) {
+          await this.handleBingoWin(interaction, bingoConfig);
+          return;
+        }
+      }
       
       // Find trigger for this command
       const trigger = currentConfig.triggers?.find(t => 
@@ -290,6 +359,13 @@ class BotManager {
           this.log('error', 'Fehler beim Laden der Reaktion', error.message);
           return;
         }
+      }
+
+      // Check for bingo event reactions first
+      const bingoConfig = this.getBingoConfig();
+      if (bingoConfig.enabled && this.matchesReaction(reaction, { emoji: bingoConfig.reactionEmoji })) {
+        await this.handleBingoEventReaction(reaction, user, bingoConfig);
+        return;
       }
 
       const currentConfig = this.getCurrentConfig();
@@ -516,17 +592,25 @@ class BotManager {
   matchesReaction(reaction, trigger) {
     const emojiName = reaction.emoji.name;
     const emojiId = reaction.emoji.id;
+    const emojiUnicode = reaction.emoji.toString();
     const triggerEmoji = trigger.emoji;
 
     this.log('info', `🔍 Emoji Match Test`, {
       triggerEmoji: triggerEmoji,
       reactionEmojiName: emojiName,
-      reactionEmojiId: emojiId
+      reactionEmojiId: emojiId,
+      reactionEmojiUnicode: emojiUnicode
     });
 
     // Check for exact match with emoji name or ID
     if (triggerEmoji === emojiName || triggerEmoji === emojiId) {
       this.log('success', '✅ Direkter Emoji-Match gefunden');
+      return true;
+    }
+
+    // Check for Unicode emoji match (most important fix)
+    if (triggerEmoji === emojiUnicode) {
+      this.log('success', '✅ Unicode Emoji-Match gefunden');
       return true;
     }
 
@@ -538,10 +622,13 @@ class BotManager {
       return matches;
     }
 
-    // Check for Unicode emoji match
-    if (triggerEmoji === emojiName) {
-      this.log('success', '✅ Unicode Emoji-Match gefunden');
-      return true;
+    // Additional check for custom emoji format <:name:id>
+    if (triggerEmoji.includes('<:') && triggerEmoji.includes('>')) {
+      const customEmojiMatch = triggerEmoji.includes(emojiId) || triggerEmoji.includes(emojiName);
+      if (customEmojiMatch) {
+        this.log('success', '✅ Custom Emoji-Match gefunden');
+        return true;
+      }
     }
 
     this.log('info', '❌ Kein Emoji-Match gefunden');
@@ -556,6 +643,373 @@ class BotManager {
       });
     }
     return params;
+  }
+
+  // Bingo Methods
+  async handleBingoRequest(interaction, bingoConfig) {
+    try {
+      this.log('info', `🎯 Bingo Request von ${interaction.user.username}`);
+      
+      if (!bingoConfig.activeDeckId) {
+        await interaction.reply({
+          content: '❌ Aktuell ist kein Bingo-Deck aktiv. Bitte wende dich an den Streamer!',
+          ephemeral: true
+        });
+        return;
+      }
+      
+      const activeDeck = bingoConfig.decks.find(deck => deck.id === bingoConfig.activeDeckId);
+      if (!activeDeck || activeDeck.events.length < bingoConfig.cardSize.width * bingoConfig.cardSize.height) {
+        await interaction.reply({
+          content: `❌ Das aktive Deck hat zu wenige Events für eine ${bingoConfig.cardSize.width}x${bingoConfig.cardSize.height} Karte!`,
+          ephemeral: true
+        });
+        return;
+      }
+      
+      await interaction.deferReply();
+      
+      // Generate bingo card
+      const bingoCard = this.generateBingoCard(activeDeck, bingoConfig.cardSize);
+      const gameId = this.generateGameId();
+      
+      // Save game data
+      await this.saveBingoGame({
+        id: gameId,
+        userId: interaction.user.id,
+        username: interaction.user.username,
+        deckId: activeDeck.id,
+        deckName: activeDeck.name,
+        cardData: bingoCard,
+        cardSize: bingoConfig.cardSize.width,
+        confirmedEvents: [],
+        startedAt: new Date().toISOString()
+      });
+      
+      // Send individual event messages
+      let eventMessages = [];
+      for (let i = 0; i < bingoCard.length; i++) {
+        const event = bingoCard[i];
+        const row = Math.floor(i / bingoConfig.cardSize.width) + 1;
+        const col = (i % bingoConfig.cardSize.width) + 1;
+        
+        const eventMsg = await interaction.followUp({
+          content: `🎯 **${row}.${col}** ${event.text}`,
+          fetchReply: true
+        });
+        
+        // Add reaction emoji
+        await eventMsg.react(bingoConfig.reactionEmoji);
+        eventMessages.push({ messageId: eventMsg.id, eventId: event.id });
+      }
+      
+      // Generate and send PNG
+      const pngBuffer = await this.generateBingoPNG(bingoCard, bingoConfig, interaction.user.username);
+      await interaction.followUp({
+        content: `🎯 **Deine Bingo-Karte, ${interaction.user.username}!**\nReagiere mit ${bingoConfig.reactionEmoji} auf die Events wenn sie passieren!`,
+        files: [{
+          attachment: pngBuffer,
+          name: `bingo-${interaction.user.username}-${gameId}.png`
+        }]
+      });
+      
+      // Save message references
+      await this.updateBingoGameMessages(gameId, eventMessages);
+      
+      this.log('success', `✅ Bingo-Karte erstellt für ${interaction.user.username}`);
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Erstellen der Bingo-Karte', error.message);
+      await interaction.editReply('❌ Fehler beim Erstellen der Bingo-Karte!');
+    }
+  }
+  
+  async handleBingoWin(interaction, bingoConfig) {
+    try {
+      this.log('info', `🏆 Bingo Win Claim von ${interaction.user.username}`);
+      
+      // Save bingo win claim
+      await this.saveBingoWin({
+        id: this.generateGameId(),
+        userId: interaction.user.id,
+        username: interaction.user.username,
+        timestamp: new Date().toISOString()
+      });
+      
+      await interaction.reply({
+        content: `🏆 **BINGO!** ${interaction.user.mention} behauptet ein Bingo zu haben!\n🔍 Der Streamer überprüft deine Karte...`,
+        allowedMentions: { parse: [] }
+      });
+      
+      this.log('success', `✅ Bingo Win gespeichert für ${interaction.user.username}`);
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Verarbeiten des Bingo Wins', error.message);
+      await interaction.reply({
+        content: '❌ Fehler beim Melden des Bingos!',
+        ephemeral: true
+      });
+    }
+  }
+  
+  generateBingoCard(deck, cardSize) {
+    const totalFields = cardSize.width * cardSize.height;
+    const shuffled = [...deck.events].sort(() => Math.random() - 0.5);
+    return shuffled.slice(0, totalFields);
+  }
+  
+  async generateBingoPNG(cardData, bingoConfig, username) {
+    try {
+      const { createCanvas } = require('canvas');
+      const canvas = createCanvas(bingoConfig.cardDimensions.width, bingoConfig.cardDimensions.height);
+      const ctx = canvas.getContext('2d');
+      
+      // Background
+      ctx.fillStyle = '#2d2d2d';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Title
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 32px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(`STREAMING BINGO - ${username}`, canvas.width / 2, 40);
+      
+      // Calculate grid
+      const gridSize = bingoConfig.cardSize.width;
+      const cellWidth = (canvas.width - 60) / gridSize;
+      const cellHeight = (canvas.height - 100) / gridSize;
+      const startX = 30;
+      const startY = 70;
+      
+      // Draw cells
+      ctx.font = '14px Arial';
+      ctx.textAlign = 'center';
+      
+      for (let i = 0; i < cardData.length; i++) {
+        const row = Math.floor(i / gridSize);
+        const col = i % gridSize;
+        const x = startX + col * cellWidth;
+        const y = startY + row * cellHeight;
+        
+        // Cell background
+        ctx.fillStyle = '#3a3a3a';
+        ctx.fillRect(x, y, cellWidth - 2, cellHeight - 2);
+        
+        // Cell border
+        ctx.strokeStyle = '#5865f2';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, cellWidth - 2, cellHeight - 2);
+        
+        // Text
+        ctx.fillStyle = '#ffffff';
+        const text = cardData[i].text;
+        const maxWidth = cellWidth - 10;
+        
+        // Word wrap
+        const words = text.split(' ');
+        const lines = [];
+        let currentLine = '';
+        
+        for (const word of words) {
+          const testLine = currentLine ? `${currentLine} ${word}` : word;
+          const metrics = ctx.measureText(testLine);
+          if (metrics.width < maxWidth) {
+            currentLine = testLine;
+          } else {
+            if (currentLine) lines.push(currentLine);
+            currentLine = word;
+          }
+        }
+        if (currentLine) lines.push(currentLine);
+        
+        // Draw text lines
+        const lineHeight = 16;
+        const textStartY = y + cellHeight / 2 - (lines.length * lineHeight) / 2 + lineHeight;
+        
+        lines.forEach((line, lineIndex) => {
+          ctx.fillText(line, x + cellWidth / 2, textStartY + lineIndex * lineHeight);
+        });
+      }
+      
+      return canvas.toBuffer('image/png');
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Generieren des PNG', error.message);
+      throw error;
+    }
+  }
+  
+  async saveBingoGame(gameData) {
+    // This would typically save to a database
+    // For now, we'll use a simple file-based approach
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      
+      const userDataDir = process.env.APPDATA || 
+                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
+                          path.join(os.homedir(), '.local', 'share'));
+      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
+      
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      
+      const gamesFile = path.join(dataDir, 'active-games.json');
+      let games = [];
+      
+      if (fs.existsSync(gamesFile)) {
+        games = JSON.parse(fs.readFileSync(gamesFile, 'utf8'));
+      }
+      
+      games.push(gameData);
+      fs.writeFileSync(gamesFile, JSON.stringify(games, null, 2));
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Speichern des Bingo-Spiels', error.message);
+    }
+  }
+  
+  async saveBingoWin(winData) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      
+      const userDataDir = process.env.APPDATA || 
+                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
+                          path.join(os.homedir(), '.local', 'share'));
+      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
+      
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      
+      const winsFile = path.join(dataDir, 'bingo-wins.json');
+      let wins = [];
+      
+      if (fs.existsSync(winsFile)) {
+        wins = JSON.parse(fs.readFileSync(winsFile, 'utf8'));
+      }
+      
+      wins.push(winData);
+      fs.writeFileSync(winsFile, JSON.stringify(wins, null, 2));
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Speichern des Bingo-Wins', error.message);
+    }
+  }
+  
+  async updateBingoGameMessages(gameId, eventMessages) {
+    // Store message references for later use
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      
+      const userDataDir = process.env.APPDATA || 
+                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
+                          path.join(os.homedir(), '.local', 'share'));
+      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
+      const messagesFile = path.join(dataDir, 'game-messages.json');
+      
+      let gameMessages = {};
+      if (fs.existsSync(messagesFile)) {
+        gameMessages = JSON.parse(fs.readFileSync(messagesFile, 'utf8'));
+      }
+      
+      gameMessages[gameId] = eventMessages;
+      fs.writeFileSync(messagesFile, JSON.stringify(gameMessages, null, 2));
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Speichern der Game Messages', error.message);
+    }
+  }
+  
+  generateGameId() {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  }
+  
+  async handleBingoEventReaction(reaction, user, bingoConfig) {
+    try {
+      this.log('info', `🎯 Bingo Event Reaktion von ${user.username}`);
+      
+      // Check if this is a bingo event message
+      const messageContent = reaction.message.content;
+      if (!messageContent.includes('🎯 **')) {
+        return; // Not a bingo event message
+      }
+      
+      // Extract event text from message
+      const eventTextMatch = messageContent.match(/🎯 \*\*\d+\.\d+\*\* (.+)/);
+      if (!eventTextMatch) {
+        return;
+      }
+      
+      const eventText = eventTextMatch[1];
+      
+      // Save event notification
+      await this.saveBingoEventNotification({
+        id: this.generateGameId(),
+        eventText: eventText,
+        messageId: reaction.message.id,
+        channelId: reaction.message.channel.id,
+        users: [{
+          id: user.id,
+          username: user.username
+        }],
+        timestamp: new Date().toISOString()
+      });
+      
+      this.log('success', `✅ Bingo Event Notification gespeichert: "${eventText}" von ${user.username}`);
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Verarbeiten der Bingo Event Reaktion', error.message);
+    }
+  }
+  
+  async saveBingoEventNotification(notification) {
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      const os = require('os');
+      
+      const userDataDir = process.env.APPDATA || 
+                         (process.platform === 'darwin' ? path.join(os.homedir(), 'Library', 'Application Support') : 
+                          path.join(os.homedir(), '.local', 'share'));
+      const dataDir = path.join(userDataDir, 'DiscordBotManager', 'bingo-data');
+      
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      
+      const notificationsFile = path.join(dataDir, 'event-notifications.json');
+      let notifications = [];
+      
+      if (fs.existsSync(notificationsFile)) {
+        notifications = JSON.parse(fs.readFileSync(notificationsFile, 'utf8'));
+      }
+      
+      // Check if notification for this event already exists
+      const existingNotification = notifications.find(n => n.eventText === notification.eventText);
+      
+      if (existingNotification) {
+        // Add user to existing notification if not already there
+        const userExists = existingNotification.users.find(u => u.id === notification.users[0].id);
+        if (!userExists) {
+          existingNotification.users.push(notification.users[0]);
+          fs.writeFileSync(notificationsFile, JSON.stringify(notifications, null, 2));
+        }
+      } else {
+        // Create new notification
+        notifications.push(notification);
+        fs.writeFileSync(notificationsFile, JSON.stringify(notifications, null, 2));
+      }
+      
+    } catch (error) {
+      this.log('error', 'Fehler beim Speichern der Event Notification', error.message);
+    }
   }
 }
 

@@ -5,6 +5,7 @@ import Dashboard from './components/Dashboard/Dashboard';
 import Settings from './components/Settings/Settings';
 import Triggers from './components/Triggers/Triggers';
 import Actions from './components/Actions/Actions';
+import StreamingBingo from './components/StreamingBingo/StreamingBingo';
 import Logs from './components/Logs/Logs';
 
 // Check if we're in Electron environment
@@ -108,6 +109,8 @@ function App() {
         return <Triggers {...props} />;
       case 'actions':
         return <Actions {...props} />;
+      case 'streaming-bingo':
+        return <StreamingBingo {...props} />;
       case 'logs':
         return <Logs />;
       default:

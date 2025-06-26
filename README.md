@@ -7,6 +7,7 @@ Ein intuitiver Discord Bot Manager mit GUI, entwickelt als Electron Desktop Appl
 - **Visueller Bot Builder**: Erstelle Discord Bots ohne Code zu schreiben
 - **Trigger System**: Unterstützt Slash Commands, Message Patterns, Reactions, Time-based und Webhooks
 - **Action System**: Modulare Aktionen für Nachrichten, Rollen, OBS, StreamerBot und mehr
+- **Streaming Bingo**: Vollständiges interaktives Bingo-System für Streams
 - **Live Bot Management**: Starte/Stoppe Bots direkt aus der App
 - **WebSocket Integration**: Verbindung zu OBS und StreamerBot
 - **Sichere Konfiguration**: Verschlüsselte Token-Speicherung
@@ -27,7 +28,8 @@ DiscordBotManager/
 │   │   ├── Dashboard/          # Dashboard Übersicht
 │   │   ├── Settings/           # Einstellungen
 │   │   ├── Triggers/           # Trigger Verwaltung
-│   │   └── Actions/            # Action Verwaltung
+│   │   ├── Actions/            # Action Verwaltung
+│   │   └── StreamingBingo/     # Streaming Bingo System
 │   ├── services/               # Backend Services
 │   │   ├── bot/                # Discord Bot Management
 │   │   ├── config/             # Konfiguration & Speicherung
@@ -37,7 +39,8 @@ DiscordBotManager/
 │   └── index.html              # HTML Template
 └── config/                     # Konfigurationsdateien
     ├── app-settings.json       # App Einstellungen
-    └── bot-config.json         # Bot Konfiguration
+    ├── bot-config.json         # Bot Konfiguration
+    └── bingo-config.json       # Bingo Konfiguration
 ```
 
 ## 🛠 Installation & Setup
@@ -104,6 +107,33 @@ Unterstützte Variablen in Aktionen:
 - `{guild.name}` - Server Name
 - `{trigger.timestamp}` - Trigger Zeitstempel
 
+## 🎯 Streaming Bingo System
+
+Das Streaming Bingo System ermöglicht es Streamern, interaktive Bingo-Spiele für ihre Community zu erstellen.
+
+### Features
+- **Deck Management**: Erstelle verschiedene Event-Decks für verschiedene Spiele
+- **Interaktive Karten**: Automatische PNG-Generierung für jeden Spieler
+- **Event Tracking**: Benutzer markieren Events durch Emoji-Reaktionen
+- **Admin Panel**: Einfache Verwaltung und Bestätigung von Events
+- **Bingo Validation**: Automatische Überprüfung von Bingo-Claims
+
+### Funktionsweise
+1. **Setup**: Erstelle Bingo-Decks mit verschiedenen Stream-Events
+2. **Activation**: Aktiviere ein Deck für den aktuellen Stream
+3. **Player Request**: Benutzer fordern Bingo-Karten mit `/bingo` an
+4. **Event Marking**: Spieler reagieren mit ✅ auf Event-Nachrichten
+5. **Admin Confirmation**: Streamer bestätigt Events im Admin Panel
+6. **Bingo Claims**: Spieler melden Bingo mit `/bingowin`
+7. **Validation**: Automatische Validierung der Bingo-Karten
+
+### Konfiguration
+- **Kartenformat**: 3x3 bis 7x7 Raster
+- **PNG-Auflösung**: Anpassbare Bildgröße
+- **Commands**: Konfigurierbare Slash Commands
+- **Emojis**: Anpassbare Reaktions-Emojis
+- **Nachrichten**: Individualisierbare Bot-Nachrichten
+
 ## 🔧 Entwicklung
 
 ### Code Style
@@ -121,12 +151,14 @@ Unterstützte Variablen in Aktionen:
 
 - [ ] Workflow Builder für komplexe Action-Ketten
 - [ ] Plugin System für externe Erweiterungen
-- [ ] Stream Bingo Feature
+- [x] Stream Bingo Feature
 - [ ] Advanced Scheduling
 - [ ] Multi-Server Support
 - [ ] Import/Export von Konfigurationen
 - [ ] Live Activity Logs
 - [ ] Performance Monitoring
+- [ ] OBS Integration für Bingo-Anzeigen
+- [ ] Erweiterte Bingo-Statistiken
 
 ## 🎨 Design Prinzipien
 

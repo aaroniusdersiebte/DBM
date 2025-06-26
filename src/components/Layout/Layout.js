@@ -5,6 +5,7 @@ const Layout = ({ children, currentView, setCurrentView, botStatus, startBot, st
     { id: 'dashboard', label: 'Dashboard', icon: '📊' },
     { id: 'triggers', label: 'Trigger & Commands', icon: '⚡' },
     { id: 'actions', label: 'Aktionen & Workflows', icon: '🔧' },
+    { id: 'streaming-bingo', label: 'Streaming Bingo', icon: '🎯' },
     { id: 'logs', label: 'Logs & Debug', icon: '🔍' },
     { id: 'settings', label: 'Einstellungen', icon: '⚙️' }
   ];
