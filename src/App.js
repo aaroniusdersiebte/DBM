@@ -5,6 +5,7 @@ import Dashboard from './components/Dashboard/Dashboard';
 import Settings from './components/Settings/Settings';
 import Triggers from './components/Triggers/Triggers';
 import Actions from './components/Actions/Actions';
+import Logs from './components/Logs/Logs';
 
 // Check if we're in Electron environment
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
@@ -107,6 +108,8 @@ function App() {
         return <Triggers {...props} />;
       case 'actions':
         return <Actions {...props} />;
+      case 'logs':
+        return <Logs />;
       default:
         return <Dashboard {...props} />;
     }

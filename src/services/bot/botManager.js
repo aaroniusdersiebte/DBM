@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, REST, Routes, Partials } = require('discord.js');
 const ConfigService = require('../config/configService');
 
 class BotManager {
@@ -6,6 +6,15 @@ class BotManager {
     this.client = null;
     this.isConnected = false;
     this.isReady = false;
+    this.logger = console.log; // Default logger
+  }
+
+  setLogger(logFunction) {
+    this.logger = logFunction;
+  }
+
+  log(level, message, data = null) {
+    this.logger(level, message, data);
   }
 
   async startBot(config) {
@@ -17,6 +26,8 @@ class BotManager {
       throw new Error('Bot Token ist erforderlich');
     }
 
+    this.log('info', 'Erstelle Discord Client...');
+    
     this.client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -24,36 +35,51 @@ class BotManager {
         GatewayIntentBits.MessageContent,
         GatewayIntentBits.GuildMessageReactions,
         GatewayIntentBits.GuildMembers
+      ],
+      partials: [
+        Partials.Message,
+        Partials.Channel,
+        Partials.Reaction
       ]
     });
 
     // Event Handlers
     this.client.on('ready', () => {
-      console.log(`Bot eingeloggt als ${this.client.user.tag}`);
+      this.log('success', `Bot eingeloggt als ${this.client.user.tag}`);
       this.isReady = true;
       this.registerCommands(config);
     });
 
     this.client.on('error', (error) => {
-      console.error('Bot Fehler:', error);
+      this.log('error', 'Bot Fehler', error.message);
+    });
+
+    this.client.on('warn', (warning) => {
+      this.log('warn', 'Bot Warnung', warning);
     });
 
     this.client.on('disconnect', () => {
-      console.log('Bot getrennt');
+      this.log('info', 'Bot getrennt');
       this.isConnected = false;
       this.isReady = false;
+    });
+
+    this.client.on('reconnecting', () => {
+      this.log('info', 'Bot versucht Reconnect...');
     });
 
     // Setup message and interaction handlers
     this.setupEventHandlers();
 
     try {
+      this.log('info', 'Verbinde mit Discord...');
       await this.client.login(config.token);
       this.isConnected = true;
-      console.log('Bot erfolgreich gestartet');
+      this.log('success', 'Bot erfolgreich gestartet und verbunden');
     } catch (error) {
       this.isConnected = false;
       this.isReady = false;
+      this.log('error', 'Bot konnte nicht gestartet werden', error.message);
       throw new Error(`Bot konnte nicht gestartet werden: ${error.message}`);
     }
   }
@@ -62,9 +88,9 @@ class BotManager {
     if (this.client) {
       try {
         await this.client.destroy();
-        console.log('Bot gestoppt');
+        this.log('success', 'Bot gestoppt');
       } catch (error) {
-        console.error('Fehler beim Stoppen des Bots:', error);
+        this.log('error', 'Fehler beim Stoppen des Bots', error.message);
       }
     }
     
@@ -86,7 +112,7 @@ class BotManager {
     try {
       return ConfigService.loadBotConfig();
     } catch (error) {
-      console.error('Fehler beim Laden der aktuellen Konfiguration:', error);
+      this.log('error', 'Fehler beim Laden der aktuellen Konfiguration', error.message);
       return { triggers: [], actions: [], commands: [] };
     }
   }
@@ -104,7 +130,7 @@ class BotManager {
       const oldCommands = currentConfig.commands || [];
 
       if (slashCommandTriggers.length === 0 && oldCommands.length === 0) {
-        console.log('Keine Commands zu registrieren');
+        this.log('info', 'Keine Commands zu registrieren');
         return;
       }
 
@@ -119,6 +145,7 @@ class BotManager {
           description: trigger.description || 'Bot Command',
           options: trigger.options || []
         });
+        this.log('info', `Command vorbereitet: /${trigger.name}`, trigger);
       });
 
       // Add old-style commands
@@ -130,32 +157,40 @@ class BotManager {
         });
       });
 
+      this.log('info', `Registriere ${commands.length} Commands...`);
+
       if (config.guildId) {
         await rest.put(
           Routes.applicationGuildCommands(this.client.user.id, config.guildId),
           { body: commands }
         );
-        console.log(`${commands.length} Guild Commands registriert für Guild ID: ${config.guildId}`);
+        this.log('success', `${commands.length} Guild Commands registriert für Guild ID: ${config.guildId}`);
       } else {
         // Register global commands if no guild ID
         await rest.put(
           Routes.applicationCommands(this.client.user.id),
           { body: commands }
         );
-        console.log(`${commands.length} Global Commands registriert`);
+        this.log('success', `${commands.length} Global Commands registriert`);
       }
 
     } catch (error) {
-      console.error('Fehler beim Registrieren der Commands:', error);
+      this.log('error', 'Fehler beim Registrieren der Commands', error.message);
     }
   }
 
   setupEventHandlers() {
+    this.log('info', 'Event Handlers werden eingerichtet...');
+
     // Slash Command Handler
     this.client.on('interactionCreate', async (interaction) => {
       if (!interaction.isChatInputCommand()) return;
 
-      console.log(`Slash Command empfangen: /${interaction.commandName}`);
+      this.log('info', `🎯 Slash Command empfangen: /${interaction.commandName}`, {
+        user: interaction.user.username,
+        guild: interaction.guild?.name,
+        channel: interaction.channel?.name
+      });
 
       const currentConfig = this.getCurrentConfig();
       
@@ -165,7 +200,11 @@ class BotManager {
       );
 
       if (trigger) {
-        console.log(`Trigger gefunden für /${interaction.commandName}, führe ${trigger.actions?.length || 0} Aktionen aus`);
+        this.log('success', `✅ Trigger gefunden für /${interaction.commandName}`, {
+          triggerName: trigger.name,
+          actionCount: trigger.actions?.length || 0
+        });
+        
         await this.executeTriggerActions(trigger, {
           user: interaction.user,
           member: interaction.member,
@@ -178,7 +217,7 @@ class BotManager {
         // Check old-style commands for backward compatibility
         const command = currentConfig.commands?.find(cmd => cmd.name === interaction.commandName);
         if (command) {
-          console.log(`Legacy Command gefunden für /${interaction.commandName}`);
+          this.log('info', `📜 Legacy Command gefunden für /${interaction.commandName}`);
           await this.executeActions(command.actions, {
             user: interaction.user,
             member: interaction.member,
@@ -188,7 +227,7 @@ class BotManager {
             commandParameters: this.extractParameters(interaction)
           });
         } else {
-          console.log(`Kein Trigger/Command gefunden für /${interaction.commandName}`);
+          this.log('warn', `❌ Kein Trigger/Command gefunden für /${interaction.commandName}`);
         }
       }
     });
@@ -202,11 +241,19 @@ class BotManager {
         trigger.type === 'message_pattern'
       ) || [];
 
-      console.log(`Nachricht erhalten: \"${message.content.substring(0, 50)}...\", prüfe ${triggers.length} Pattern-Trigger`);
+      this.log('info', `💬 Nachricht erhalten von ${message.author.username}`, {
+        content: message.content.substring(0, 100),
+        patternTriggersCount: triggers.length
+      });
 
       for (const trigger of triggers) {
         if (this.matchesPattern(message.content, trigger.pattern)) {
-          console.log(`Pattern-Match gefunden für Trigger: ${trigger.name}`);
+          this.log('success', `🎯 Pattern-Match gefunden!`, {
+            triggerName: trigger.name,
+            pattern: trigger.pattern,
+            message: message.content.substring(0, 50)
+          });
+          
           await this.executeTriggerActions(trigger, {
             user: message.author,
             member: message.member,
@@ -218,16 +265,29 @@ class BotManager {
       }
     });
 
-    // Reaction Handler
+    // Reaction Handler - IMPROVED
     this.client.on('messageReactionAdd', async (reaction, user) => {
-      if (user.bot) return;
+      this.log('info', `👍 Reaktion hinzugefügt`, {
+        emoji: reaction.emoji.name || reaction.emoji.id,
+        emojiId: reaction.emoji.id,
+        user: user.username,
+        isBot: user.bot,
+        isPartial: reaction.partial
+      });
+
+      if (user.bot) {
+        this.log('info', '🤖 Reaktion von Bot ignoriert');
+        return;
+      }
 
       // Handle partial reactions
       if (reaction.partial) {
         try {
+          this.log('info', '🔄 Fetching partial reaction...');
           await reaction.fetch();
+          this.log('success', '✅ Partial reaction gefetcht');
         } catch (error) {
-          console.error('Fehler beim Laden der Reaktion:', error);
+          this.log('error', 'Fehler beim Laden der Reaktion', error.message);
           return;
         }
       }
@@ -237,11 +297,27 @@ class BotManager {
         trigger.type === 'message_reaction'
       ) || [];
 
-      console.log(`Reaktion hinzugefügt: ${reaction.emoji.name || reaction.emoji.id}, prüfe ${triggers.length} Reaktions-Trigger`);
+      this.log('info', `🔍 Prüfe ${triggers.length} Reaktions-Trigger`, {
+        emojiName: reaction.emoji.name,
+        emojiId: reaction.emoji.id,
+        availableTriggers: triggers.map(t => ({ name: t.name, emoji: t.emoji }))
+      });
 
       for (const trigger of triggers) {
-        if (this.matchesReaction(reaction, trigger)) {
-          console.log(`Reaktions-Match gefunden für Trigger: ${trigger.name}`);
+        const matchResult = this.matchesReaction(reaction, trigger);
+        this.log('info', `🔎 Checking trigger "${trigger.name}"`, {
+          triggerEmoji: trigger.emoji,
+          reactionEmoji: reaction.emoji.name || reaction.emoji.id,
+          matches: matchResult
+        });
+
+        if (matchResult) {
+          this.log('success', `🎉 Reaktions-Match gefunden!`, {
+            triggerName: trigger.name,
+            triggerEmoji: trigger.emoji,
+            reactionEmoji: reaction.emoji.name || reaction.emoji.id
+          });
+          
           await this.executeTriggerActions(trigger, {
             user: user,
             member: reaction.message.guild?.members.cache.get(user.id),
@@ -253,33 +329,39 @@ class BotManager {
         }
       }
     });
+
+    this.log('success', 'Event Handlers erfolgreich eingerichtet');
   }
 
   async executeTriggerActions(trigger, context) {
     if (!trigger.actions || trigger.actions.length === 0) {
-      console.log(`Trigger ${trigger.name} hat keine Aktionen`);
+      this.log('warn', `⚠️ Trigger ${trigger.name} hat keine Aktionen`);
       return;
     }
 
     const currentConfig = this.getCurrentConfig();
     const actions = currentConfig.actions || [];
 
-    console.log(`Führe ${trigger.actions.length} Aktionen für Trigger ${trigger.name} aus`);
+    this.log('info', `🚀 Führe ${trigger.actions.length} Aktionen für Trigger "${trigger.name}" aus`);
 
-    for (const actionId of trigger.actions) {
+    for (let i = 0; i < trigger.actions.length; i++) {
+      const actionId = trigger.actions[i];
       try {
         // Find action by ID
         const actionConfig = actions.find(a => a.id === actionId);
         if (actionConfig) {
-          console.log(`Führe Aktion aus: ${actionConfig.name} (${actionConfig.type})`);
+          this.log('info', `⚡ Führe Aktion ${i + 1}/${trigger.actions.length} aus: ${actionConfig.name} (${actionConfig.type})`);
           await this.executeAction(actionConfig, context);
+          this.log('success', `✅ Aktion erfolgreich ausgeführt: ${actionConfig.name}`);
         } else {
-          console.error(`Aktion mit ID ${actionId} nicht gefunden`);
+          this.log('error', `❌ Aktion mit ID ${actionId} nicht gefunden`);
         }
       } catch (error) {
-        console.error(`Fehler beim Ausführen der Aktion ${actionId}:`, error);
+        this.log('error', `💥 Fehler beim Ausführen der Aktion ${actionId}`, error.message);
       }
     }
+
+    this.log('success', `🏁 Alle Aktionen für Trigger "${trigger.name}" abgeschlossen`);
   }
 
   async executeActions(actions, context) {
@@ -289,17 +371,19 @@ class BotManager {
       try {
         await this.executeAction(action, context);
       } catch (error) {
-        console.error('Fehler beim Ausführen der Aktion:', error);
+        this.log('error', 'Fehler beim Ausführen der Aktion', error.message);
       }
     }
   }
 
   async executeAction(action, context) {
-    console.log(`Executing action: ${action.type} - ${action.name}`);
+    this.log('info', `🎬 Executing action: ${action.type} - ${action.name}`);
 
     switch (action.type) {
       case 'send_message':
         const content = this.replaceVariables(action.content, context);
+        this.log('info', `💌 Sende Nachricht: "${content.substring(0, 50)}..."`);
+        
         if (context.interaction) {
           await context.interaction.reply(content);
         } else if (context.channel) {
@@ -314,6 +398,8 @@ class BotManager {
           color: parseInt(action.embedColor?.replace('#', '') || '5865f2', 16)
         };
         
+        this.log('info', `📋 Sende Embed: "${embed.title}"`);
+        
         if (context.interaction) {
           await context.interaction.reply({ embeds: [embed] });
         } else if (context.channel) {
@@ -325,9 +411,9 @@ class BotManager {
         try {
           const dmContent = this.replaceVariables(action.content, context);
           await context.user.send(dmContent);
-          console.log(`DM gesendet an ${context.user.username}`);
+          this.log('success', `📨 DM gesendet an ${context.user.username}: "${dmContent.substring(0, 30)}..."`);
         } catch (error) {
-          console.error('Konnte keine DM senden:', error);
+          this.log('error', `❌ Konnte keine DM an ${context.user.username} senden`, error.message);
         }
         break;
 
@@ -335,9 +421,9 @@ class BotManager {
         if (context.member && action.roleId) {
           try {
             await context.member.roles.add(action.roleId);
-            console.log(`Rolle ${action.roleId} hinzugefügt für ${context.user.username}`);
+            this.log('success', `➕ Rolle ${action.roleId} hinzugefügt für ${context.user.username}`);
           } catch (error) {
-            console.error('Konnte Rolle nicht hinzufügen:', error);
+            this.log('error', `❌ Konnte Rolle ${action.roleId} nicht hinzufügen für ${context.user.username}`, error.message);
           }
         }
         break;
@@ -346,23 +432,26 @@ class BotManager {
         if (context.member && action.roleId) {
           try {
             await context.member.roles.remove(action.roleId);
-            console.log(`Rolle ${action.roleId} entfernt für ${context.user.username}`);
+            this.log('success', `➖ Rolle ${action.roleId} entfernt für ${context.user.username}`);
           } catch (error) {
-            console.error('Konnte Rolle nicht entfernen:', error);
+            this.log('error', `❌ Konnte Rolle ${action.roleId} nicht entfernen für ${context.user.username}`, error.message);
           }
         }
         break;
 
       case 'delay':
         const seconds = action.seconds || 1;
-        console.log(`Warte ${seconds} Sekunden...`);
+        this.log('info', `⏱️ Warte ${seconds} Sekunden...`);
         await new Promise(resolve => setTimeout(resolve, seconds * 1000));
+        this.log('info', `✅ Wartezeit von ${seconds} Sekunden beendet`);
         break;
 
       case 'webhook_call':
         try {
           const fetch = require('node-fetch');
           const payload = action.payload ? JSON.parse(this.replaceVariables(action.payload, context)) : {};
+          
+          this.log('info', `🌐 Rufe Webhook auf: ${action.webhookUrl}`);
           
           const response = await fetch(action.webhookUrl, {
             method: 'POST',
@@ -372,21 +461,21 @@ class BotManager {
             body: JSON.stringify(payload)
           });
           
-          console.log(`Webhook aufgerufen: ${response.status}`);
+          this.log('success', `📡 Webhook aufgerufen: ${response.status} ${response.statusText}`);
         } catch (error) {
-          console.error('Webhook-Fehler:', error);
+          this.log('error', '🚫 Webhook-Fehler', error.message);
         }
         break;
 
       default:
-        console.log(`Aktion ${action.type} noch nicht implementiert`);
+        this.log('warn', `⚠️ Aktion ${action.type} noch nicht implementiert`);
     }
   }
 
   replaceVariables(text, context) {
     if (!text) return '';
 
-    return text
+    const result = text
       .replace(/\{user\.id\}/g, context.user?.id || '')
       .replace(/\{user\.username\}/g, context.user?.username || '')
       .replace(/\{user\.displayName\}/g, context.member?.displayName || context.user?.username || '')
@@ -398,6 +487,8 @@ class BotManager {
       .replace(/\{trigger\.timestamp\}/g, new Date().toISOString())
       .replace(/\{date\}/g, new Date().toLocaleDateString('de-DE'))
       .replace(/\{time\}/g, new Date().toLocaleTimeString('de-DE'));
+
+    return result;
   }
 
   matchesPattern(content, pattern) {
@@ -407,14 +498,18 @@ class BotManager {
       // Regex pattern
       try {
         const regex = new RegExp(pattern.slice(1, -2), 'i');
-        return regex.test(content);
+        const matches = regex.test(content);
+        this.log('info', `🔍 Regex Pattern Test: "${pattern}" gegen "${content}" = ${matches}`);
+        return matches;
       } catch (error) {
-        console.error('Ungültiges Regex Pattern:', pattern, error);
+        this.log('error', 'Ungültiges Regex Pattern', { pattern, error: error.message });
         return false;
       }
     } else {
       // Simple string match (case insensitive)
-      return content.toLowerCase().includes(pattern.toLowerCase());
+      const matches = content.toLowerCase().includes(pattern.toLowerCase());
+      this.log('info', `🔍 String Pattern Test: "${pattern}" gegen "${content}" = ${matches}`);
+      return matches;
     }
   }
 
@@ -423,17 +518,33 @@ class BotManager {
     const emojiId = reaction.emoji.id;
     const triggerEmoji = trigger.emoji;
 
+    this.log('info', `🔍 Emoji Match Test`, {
+      triggerEmoji: triggerEmoji,
+      reactionEmojiName: emojiName,
+      reactionEmojiId: emojiId
+    });
+
     // Check for exact match with emoji name or ID
     if (triggerEmoji === emojiName || triggerEmoji === emojiId) {
+      this.log('success', '✅ Direkter Emoji-Match gefunden');
       return true;
     }
 
     // Check for emoji format like :thumbsup:
     if (triggerEmoji.startsWith(':') && triggerEmoji.endsWith(':')) {
       const cleanTriggerEmoji = triggerEmoji.slice(1, -1);
-      return cleanTriggerEmoji === emojiName;
+      const matches = cleanTriggerEmoji === emojiName;
+      this.log('info', `🔍 :emoji: Format Test: ":${cleanTriggerEmoji}:" gegen "${emojiName}" = ${matches}`);
+      return matches;
     }
 
+    // Check for Unicode emoji match
+    if (triggerEmoji === emojiName) {
+      this.log('success', '✅ Unicode Emoji-Match gefunden');
+      return true;
+    }
+
+    this.log('info', '❌ Kein Emoji-Match gefunden');
     return false;
   }
 
